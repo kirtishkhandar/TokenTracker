@@ -1,0 +1,33 @@
+name: TokenTracker
+options:
+  bundleIdPrefix: com.tokentracker
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "15.0"
+  generateEmptyDirectories: true
+
+targets:
+  TokenTracker:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+        type: group
+    resources:
+      - path: Resources/Assets.xcassets
+      - path: proxy/proxy_server.py
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tokentracker.app
+        PRODUCT_NAME: TokenTracker
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        INFOPLIST_FILE: Info.plist
+        CODE_SIGN_ENTITLEMENTS: TokenTracker.entitlements
+        SWIFT_VERSION: "5.9"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_REQUIRED: "NO"
+        ENABLE_HARDENED_RUNTIME: "NO"
+    info:
+      path: Info.plist
