@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MainWindowView: View {
     @EnvironmentObject var state: AppState
+    @State private var showingClearConfirm = false
 
     var body: some View {
         NavigationSplitView {
@@ -34,6 +35,32 @@ struct MainWindowView: View {
                 }
                 .help("Refresh data")
             }
+            ToolbarItem(placement: .navigation) {
+                SettingsLink {
+                    Image(systemName: "gearshape")
+                }
+                .help("Settings")
+            }
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    showingClearConfirm = true
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .help("Clear history")
+                .confirmationDialog(
+                    "Clear all request history?",
+                    isPresented: $showingClearConfirm,
+                    titleVisibility: .visible
+                ) {
+                    Button("Clear All", role: .destructive) {
+                        state.clearHistory()
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This will delete all tracked requests. This cannot be undone.")
+                }
+            }
         }
     }
 }
@@ -43,48 +70,65 @@ struct MainWindowView: View {
 struct DashboardHeader: View {
     @EnvironmentObject var state: AppState
 
+    private var filtered: [UsageRecord] { state.filteredRequests }
+
     private var totalInput: Int {
-        state.requests.reduce(0) { $0 + $1.inputTokens }
+        filtered.reduce(0) { $0 + $1.inputTokens }
     }
     private var totalOutput: Int {
-        state.requests.reduce(0) { $0 + $1.outputTokens }
+        filtered.reduce(0) { $0 + $1.outputTokens }
     }
     private var totalCost: Double {
-        state.requests.reduce(0.0) { $0 + $1.estimatedCost }
+        filtered.reduce(0.0) { $0 + $1.estimatedCost }
     }
 
     var body: some View {
-        HStack(spacing: 24) {
-            StatCard(
-                title: "Input Tokens",
-                value: formatTokens(totalInput),
-                icon: "arrow.up.doc",
-                color: .blue
-            )
-            StatCard(
-                title: "Output Tokens",
-                value: formatTokens(totalOutput),
-                icon: "arrow.down.doc",
-                color: .green
-            )
-            StatCard(
-                title: "Total Tokens",
-                value: formatTokens(totalInput + totalOutput),
-                icon: "sum",
-                color: .orange
-            )
-            StatCard(
-                title: "Est. Cost",
-                value: formatCost(totalCost),
-                icon: "dollarsign.circle",
-                color: .purple
-            )
-            StatCard(
-                title: "Requests",
-                value: "\(state.requests.count)",
-                icon: "number",
-                color: .gray
-            )
+        VStack(spacing: 12) {
+            // Overall stats
+            HStack(spacing: 24) {
+                StatCard(
+                    title: "Input Tokens",
+                    value: formatTokens(totalInput),
+                    icon: "arrow.up.doc",
+                    color: .blue
+                )
+                StatCard(
+                    title: "Output Tokens",
+                    value: formatTokens(totalOutput),
+                    icon: "arrow.down.doc",
+                    color: .green
+                )
+                StatCard(
+                    title: "Total Tokens",
+                    value: formatTokens(totalInput + totalOutput),
+                    icon: "sum",
+                    color: .orange
+                )
+                StatCard(
+                    title: "Est. Cost",
+                    value: formatCost(totalCost),
+                    icon: "dollarsign.circle",
+                    color: .purple
+                )
+                StatCard(
+                    title: "Requests",
+                    value: "\(filtered.count)",
+                    icon: "number",
+                    color: .gray
+                )
+            }
+
+            // Model breakdown (only when not already filtering by model)
+            if state.filterModel == nil && state.modelSummaries.count > 1 {
+                Divider()
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(state.modelSummaries) { summary in
+                            ModelBreakdownCard(summary: summary)
+                        }
+                    }
+                }
+            }
         }
         .padding()
     }
@@ -173,6 +217,99 @@ struct SidebarView: View {
                     value: String(format: "$%.4f", state.todayCost))
             }
 
+            if !state.modelSummaries.isEmpty {
+                Section("By Model") {
+                    Button {
+                        state.filterModel = nil
+                    } label: {
+                        HStack {
+                            Text("All Models")
+                                .font(.caption)
+                            Spacer()
+                            if state.filterModel == nil {
+                                Image(systemName: "checkmark")
+                                    .font(.caption2)
+                                    .foregroundStyle(.blue)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+
+                    ForEach(state.modelSummaries) { summary in
+                        Button {
+                            state.filterModel = summary.model
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(summary.model.shortModelName)
+                                        .font(.caption)
+                                        .fontWeight(
+                                            state.filterModel == summary.model
+                                            ? .semibold : .regular)
+                                    Text("\(summary.requestCount) reqs · \(formatCompact(summary.totalTokens)) tok")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if state.filterModel == summary.model {
+                                    Image(systemName: "checkmark")
+                                        .font(.caption2)
+                                        .foregroundStyle(.blue)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            if !state.apiKeySummaries.isEmpty
+                && state.apiKeySummaries.count > 1 {
+                Section("By API Key") {
+                    Button {
+                        state.filterApiKey = nil
+                    } label: {
+                        HStack {
+                            Text("All Keys")
+                                .font(.caption)
+                            Spacer()
+                            if state.filterApiKey == nil {
+                                Image(systemName: "checkmark")
+                                    .font(.caption2)
+                                    .foregroundStyle(.blue)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+
+                    ForEach(state.apiKeySummaries) { summary in
+                        Button {
+                            state.filterApiKey = summary.apiKeyHint
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(summary.displayName)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .fontWeight(
+                                            state.filterApiKey == summary.apiKeyHint
+                                            ? .semibold : .regular)
+                                    Text("\(summary.requestCount) reqs · \(formatCompact(summary.totalTokens)) tok")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if state.filterApiKey == summary.apiKeyHint {
+                                    Image(systemName: "checkmark")
+                                        .font(.caption2)
+                                        .foregroundStyle(.blue)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
             if let err = state.errorMessage {
                 Section("Error") {
                     Text(err)
@@ -183,6 +320,76 @@ struct SidebarView: View {
         }
         .listStyle(.sidebar)
     }
+
+    private func formatCompact(_ n: Int) -> String {
+        if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
+        if n >= 1_000 { return String(format: "%.0fK", Double(n) / 1_000) }
+        return "\(n)"
+    }
+}
+
+extension String {
+    /// "claude-opus-4-6" → "opus-4.6"
+    var shortModelName: String {
+        let parts = self.split(separator: "-")
+        if let familyIdx = parts.firstIndex(where: {
+            ["haiku", "sonnet", "opus"].contains($0.lowercased())
+        }) {
+            let family = parts[familyIdx]
+            var versionParts: [String] = []
+            var i = familyIdx + 1
+            while i < parts.count {
+                let part = String(parts[i])
+                if part.count <= 2, part.allSatisfy(\.isNumber) {
+                    versionParts.append(part)
+                } else {
+                    break
+                }
+                i += 1
+            }
+            if versionParts.isEmpty { return String(family) }
+            return "\(family)-\(versionParts.joined(separator: "."))"
+        }
+        return self
+    }
+}
+
+// MARK: - Model Breakdown Card
+
+struct ModelBreakdownCard: View {
+    let summary: ModelSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(summary.model.shortModelName)
+                .font(.caption)
+                .fontWeight(.semibold)
+            HStack(spacing: 8) {
+                Label("\(formatCompact(summary.inputTokens))", systemImage: "arrow.up")
+                    .font(.caption2)
+                    .foregroundStyle(.blue)
+                Label("\(formatCompact(summary.outputTokens))", systemImage: "arrow.down")
+                    .font(.caption2)
+                    .foregroundStyle(.green)
+            }
+            HStack(spacing: 8) {
+                Text("\(summary.requestCount) reqs")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(String(format: "$%.4f", summary.estimatedCost))
+                    .font(.caption2)
+                    .foregroundStyle(.purple)
+            }
+        }
+        .padding(8)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func formatCompact(_ n: Int) -> String {
+        if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
+        if n >= 1_000 { return String(format: "%.0fK", Double(n) / 1_000) }
+        return "\(n)"
+    }
 }
 
 // MARK: - Request List
@@ -191,7 +398,7 @@ struct RequestListView: View {
     @EnvironmentObject var state: AppState
 
     var body: some View {
-        if state.requests.isEmpty {
+        if state.filteredRequests.isEmpty {
             ContentUnavailableView(
                 "No Requests",
                 systemImage: "tray",
@@ -202,7 +409,7 @@ struct RequestListView: View {
                 )
             )
         } else {
-            Table(state.requests) {
+            Table(state.filteredRequests) {
                 TableColumn("Time") { row in
                     Text(timeLabel(row.timestamp))
                         .font(.caption)

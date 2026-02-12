@@ -4,6 +4,8 @@ struct SettingsView: View {
     @EnvironmentObject var state: AppState
     @State private var portText = ""
     @State private var copied = false
+    @State private var shellConfigured = false
+    @State private var launchAtLogin = false
 
     var shellCommand: String {
         "export ANTHROPIC_BASE_URL=http://localhost:\(state.proxyPort)"
@@ -16,7 +18,7 @@ struct SettingsView: View {
             setupTab
                 .tabItem { Label("Setup", systemImage: "terminal") }
         }
-        .frame(width: 480, height: 320)
+        .frame(width: 520, height: 340)
         .onAppear {
             portText = "\(state.proxyPort)"
         }
@@ -26,7 +28,7 @@ struct SettingsView: View {
 
     var generalTab: some View {
         Form {
-            Section("Proxy") {
+            Section("Proxy Port") {
                 HStack {
                     Text("Port:")
                     TextField("Port", text: $portText)
@@ -81,40 +83,48 @@ struct SettingsView: View {
     var setupTab: some View {
         Form {
             Section("Shell Configuration") {
-                Text("Add this line to your shell profile (~/.zshrc or ~/.bashrc):")
+                Text("Add this line to your shell profile (~/.zshrc, ~/.bashrc, etc.):")
                     .font(.callout)
 
                 HStack {
                     Text(shellCommand)
                         .font(.system(.caption, design: .monospaced))
                         .padding(8)
-                        .background(.quaternary, in: RoundedRectangle(
-                            cornerRadius: 6))
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
                         .textSelection(.enabled)
 
                     Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(
-                            shellCommand, forType: .string)
-                        copied = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                            copied = false
-                        }
+                        copyToClipboard(shellCommand)
                     } label: {
-                        Image(systemName: copied
-                              ? "checkmark" : "doc.on.doc")
+                        Image(systemName: copied ? "checkmark" : "doc.on.doc")
                     }
                     .help("Copy to clipboard")
                 }
+
+                Button(shellConfigured ? "Added to ~/.zshrc" : "Add to ~/.zshrc automatically") {
+                    addToZshrc()
+                }
+                .disabled(shellConfigured)
+            }
+
+            Section("Startup") {
+                Toggle("Launch at Login", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { _, newValue in
+                        if newValue {
+                            installLaunchAgent()
+                        } else {
+                            removeLaunchAgent()
+                        }
+                    }
             }
 
             Section("How It Works") {
                 VStack(alignment: .leading, spacing: 6) {
-                    step("1", "The proxy runs on localhost:\(state.proxyPort)")
-                    step("2", "ANTHROPIC_BASE_URL redirects API calls through it")
-                    step("3", "Requests are forwarded to api.anthropic.com")
-                    step("4", "Token usage from each response is logged to SQLite")
-                    step("5", "Claude Code, your scripts — all tracked automatically")
+                    step("1", "The proxy runs on a local port (e.g., \(state.proxyPort))")
+                    step("2", "ANTHROPIC_BASE_URL redirects API calls to the proxy")
+                    step("3", "Requests are forwarded to the Anthropic API")
+                    step("4", "Token usage from each response is logged to a local SQLite database")
+                    step("5", "Your scripts, Claude Code, etc. are all tracked automatically")
                 }
                 .font(.callout)
             }
@@ -127,6 +137,43 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+        .onAppear {
+            checkZshrc()
+            checkLaunchAgent()
+        }
+    }
+
+    private func checkZshrc() {
+        let zshrcPath = NSHomeDirectory() + "/.zshrc"
+        if let contents = try? String(contentsOfFile: zshrcPath, encoding: .utf8) {
+            shellConfigured = contents.contains("ANTHROPIC_BASE_URL")
+        }
+    }
+
+    private func addToZshrc() {
+        state.addToZshrcIfNeeded()
+        shellConfigured = true
+    }
+
+    private func copyToClipboard(_ string: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
+        copied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            copied = false
+        }
+    }
+
+    private func checkLaunchAgent() {
+        launchAtLogin = FileManager.default.fileExists(atPath: AppState.launchAgentPath)
+    }
+
+    private func installLaunchAgent() {
+        AppState.installLaunchAgent()
+    }
+
+    private func removeLaunchAgent() {
+        AppState.removeLaunchAgent()
     }
 
     private func step(_ num: String, _ text: String) -> some View {

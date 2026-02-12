@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MenuBarView: View {
     @EnvironmentObject var state: AppState
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -93,7 +94,18 @@ struct MenuBarView: View {
                 }
                 .controlSize(.small)
 
+                Button("Dashboard") {
+                    openWindow(id: "dashboard")
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                }
+                .controlSize(.small)
+
                 Spacer()
+
+                SettingsLink {
+                    Image(systemName: "gear")
+                }
+                .controlSize(.small)
 
                 Button("Quit") {
                     state.stopProxy()

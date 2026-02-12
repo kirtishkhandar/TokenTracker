@@ -176,7 +176,41 @@ curl http://localhost:5005/v1/messages \
 
 No additional configuration needed. Claude Code reads `ANTHROPIC_BASE_URL` automatically. Start Claude Code as usual — all API calls will route through the proxy.
 
-### 5. Custom Caller Identification (Optional)
+### 5. Use with OpenClaw
+
+OpenClaw does not read the `ANTHROPIC_BASE_URL` environment variable for its API calls. You need to configure the proxy URL directly in OpenClaw's config (`~/.openclaw/openclaw.json`):
+
+```json
+{
+  "models": {
+    "providers": {
+      "anthropic": {
+        "baseUrl": "http://localhost:5005",
+        "api": "anthropic-messages",
+        "models": [
+          { "id": "claude-opus-4-6", "name": "Claude Opus 4" },
+          { "id": "claude-sonnet-4-5-20250929", "name": "Claude Sonnet 4.5" },
+          { "id": "claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5" }
+        ]
+      }
+    }
+  }
+}
+```
+
+Add or update the model IDs as needed. The `env.vars` setting can be kept alongside this for other apps that do respect the environment variable:
+
+```json
+{
+  "env": {
+    "vars": {
+      "ANTHROPIC_BASE_URL": "http://localhost:5005"
+    }
+  }
+}
+```
+
+### 6. Custom Caller Identification (Optional)
 
 If you want to distinguish between different scripts in the usage log, add a custom header:
 

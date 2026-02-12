@@ -5,8 +5,8 @@ struct TokenTrackerApp: App {
     @StateObject private var appState = AppState()
 
     var body: some Scene {
-        // Main window (launched from Dock icon)
-        WindowGroup {
+        // Main window
+        WindowGroup(id: "dashboard") {
             MainWindowView()
                 .environmentObject(appState)
                 .frame(minWidth: 700, minHeight: 500)
@@ -19,9 +19,11 @@ struct TokenTrackerApp: App {
                 .environmentObject(appState)
         } label: {
             HStack(spacing: 4) {
-                Image(systemName: "chart.bar.fill")
+                Image(systemName: appState.menuBarIcon)
+                    .foregroundStyle(appState.menuBarColor)
                 Text(appState.menuBarLabel)
                     .monospacedDigit()
+                    .foregroundStyle(appState.menuBarColor)
             }
         }
         .menuBarExtraStyle(.window)

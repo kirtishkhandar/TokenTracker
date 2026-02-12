@@ -29,14 +29,12 @@ from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from pathlib import Path
-from urllib.parse import urlparse
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
 ANTHROPIC_HOST = "api.anthropic.com"
-ANTHROPIC_PORT = 443
 DEFAULT_PORT = 5005
 DEFAULT_DB_PATH = os.path.expanduser("~/.tokentracker/usage.db")
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
@@ -67,6 +65,7 @@ class UsageDatabase:
             CREATE TABLE IF NOT EXISTS requests (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp       TEXT    NOT NULL,
+                provider        TEXT    NOT NULL DEFAULT 'anthropic',
                 model           TEXT    NOT NULL,
                 endpoint        TEXT    NOT NULL,
                 input_tokens    INTEGER NOT NULL DEFAULT 0,
@@ -77,33 +76,50 @@ class UsageDatabase:
                 request_id      TEXT,
                 stop_reason     TEXT,
                 caller          TEXT,
-                error           TEXT
+                error           TEXT,
+                api_key_hint    TEXT    NOT NULL DEFAULT ''
             );
 
             CREATE INDEX IF NOT EXISTS idx_requests_timestamp
                 ON requests(timestamp);
-            CREATE INDEX IF NOT EXISTS idx_requests_model
-                ON requests(model);
         """)
+        # Migrate: add api_key_hint column if missing
+        try:
+            conn.execute("SELECT api_key_hint FROM requests LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute(
+                "ALTER TABLE requests ADD COLUMN api_key_hint TEXT NOT NULL DEFAULT ''")
+
+        # Migrate: add provider column if missing
+        try:
+            conn.execute("SELECT provider FROM requests LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute(
+                "ALTER TABLE requests ADD COLUMN provider TEXT NOT NULL DEFAULT 'anthropic'"
+            )
         conn.commit()
 
-    def log_request(self, *, model: str, endpoint: str, input_tokens: int,
-                    output_tokens: int, cache_creation_input_tokens: int = 0,
+    def log_request(self, *, model: str, endpoint: str,
+                    input_tokens: int, output_tokens: int,
+                    cache_creation_input_tokens: int = 0,
                     cache_read_input_tokens: int = 0, status_code: int = 0,
                     request_id: str = "", stop_reason: str = "",
-                    caller: str = "", error: str = ""):
+                    caller: str = "", error: str = "",
+                    api_key_hint: str = ""):
         conn = self._get_conn()
         conn.execute("""
             INSERT INTO requests
-                (timestamp, model, endpoint, input_tokens, output_tokens,
+                (timestamp, provider, model, endpoint, input_tokens, output_tokens,
                  cache_creation_input_tokens, cache_read_input_tokens,
-                 status_code, request_id, stop_reason, caller, error)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 status_code, request_id, stop_reason, caller, error,
+                 api_key_hint)
+            VALUES (?, 'anthropic', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             datetime.now(timezone.utc).isoformat(),
             model, endpoint, input_tokens, output_tokens,
             cache_creation_input_tokens, cache_read_input_tokens,
             status_code, request_id, stop_reason, caller, error,
+            api_key_hint,
         ))
         conn.commit()
         logging.info(
@@ -117,7 +133,7 @@ class UsageDatabase:
 # ---------------------------------------------------------------------------
 
 class ProxyHandler(BaseHTTPRequestHandler):
-    """Handles incoming HTTP requests and proxies them to Anthropic."""
+    """Handles incoming HTTP requests and proxies them to the Anthropic API."""
 
     # Class-level references (set before server starts)
     db: UsageDatabase = None
@@ -150,10 +166,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
         # Identify caller from custom header (optional)
         caller = self.headers.get("X-TokenTracker-Caller", "")
 
-        # Connect to Anthropic
+        # Capture masked API key hint (last 8 chars) for segregation
+        api_key = self.headers.get("x-api-key", "")
+        api_key_hint = f"...{api_key[-8:]}" if len(api_key) >= 8 else ""
+
+        # Connect to Anthropic API
         context = ssl.create_default_context()
         conn = http.client.HTTPSConnection(
-            ANTHROPIC_HOST, ANTHROPIC_PORT, context=context, timeout=300
+            ANTHROPIC_HOST, 443, context=context, timeout=300
         )
 
         # Build headers to forward (skip hop-by-hop headers)
@@ -172,11 +192,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
             conn.request(method, path, body=body, headers=forward_headers)
             response = conn.getresponse()
         except Exception as e:
-            logging.error("Failed to connect to Anthropic: %s", e)
+            logging.error("Failed to connect to %s: %s", ANTHROPIC_HOST, e)
             self._send_error(502, f"Proxy error: {e}")
             self.db.log_request(
                 model=model, endpoint=path, input_tokens=0,
                 output_tokens=0, caller=caller,
+                api_key_hint=api_key_hint,
                 error=f"Connection failed: {e}",
             )
             return
@@ -188,18 +209,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._handle_streaming(
                 response, response_headers, status,
                 model=model, endpoint=path, caller=caller,
+                api_key_hint=api_key_hint,
             )
         else:
             self._handle_non_streaming(
                 response, response_headers, status,
                 model=model, endpoint=path, caller=caller,
+                api_key_hint=api_key_hint,
             )
 
         conn.close()
 
     def _handle_non_streaming(self, response, headers, status, *,
-                              model, endpoint, caller):
-        """Handle a non-streaming API response."""
+                              model, endpoint, caller, api_key_hint=""):
+        """Handle a non-streaming Anthropic API response."""
         body = response.read()
 
         # Send response to client
@@ -213,11 +236,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         # Parse and log usage
         self._parse_and_log_usage(body, status, model=model,
-                                  endpoint=endpoint, caller=caller)
+                                  endpoint=endpoint, caller=caller,
+                                  api_key_hint=api_key_hint)
 
     def _handle_streaming(self, response, headers, status, *,
-                          model, endpoint, caller):
-        """Handle a streaming SSE response, forwarding chunks in real time."""
+                          model, endpoint, caller, api_key_hint=""):
+        """Handle a streaming SSE response from Anthropic, forwarding chunks in real time."""
         # Send response headers to client
         self.send_response(status)
         for key, value in headers:
@@ -303,6 +327,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             request_id=request_id,
             stop_reason=stop_reason,
             caller=caller,
+            api_key_hint=api_key_hint,
         )
 
     def _write_chunk(self, data: bytes):
@@ -313,8 +338,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def _parse_and_log_usage(self, body: bytes, status: int, *,
-                             model, endpoint, caller):
-        """Parse a non-streaming response body and log usage."""
+                             model, endpoint, caller, api_key_hint=""):
+        """Parse a non-streaming Anthropic response body and log usage."""
         request_id = ""
         stop_reason = ""
         input_tokens = 0
@@ -348,6 +373,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             cache_read_input_tokens=cache_read,
             status_code=status, request_id=request_id,
             stop_reason=stop_reason, caller=caller, error=error,
+            api_key_hint=api_key_hint,
         )
 
     def _send_error(self, code: int, message: str):
@@ -417,29 +443,37 @@ def main():
     )
 
     db = UsageDatabase(args.db)
+
     ProxyHandler.db = db
 
-    server = ThreadedHTTPServer(("127.0.0.1", args.port), ProxyHandler)
-    logging.info("TokenTracker proxy listening on http://127.0.0.1:%d",
-                 args.port)
-    logging.info("Database: %s", args.db)
-    logging.info("Set ANTHROPIC_BASE_URL=http://localhost:%d in your shell",
-                 args.port)
+    # Retry binding up to 3 times
+    server = None
+    for attempt in range(3):
+        try:
+            server = ThreadedHTTPServer(("127.0.0.1", args.port), ProxyHandler)
+            break
+        except OSError as e:
+            if attempt < 2:
+                logging.warning("Port %d busy, retrying in 2s... (%s)", args.port, e)
+                time.sleep(2)
+            else:
+                logging.error("Cannot bind to port %d: %s", args.port, e)
+                sys.exit(1)
 
-    # Graceful shutdown on SIGINT/SIGTERM
+    logging.info("TokenTracker proxy listening on http://127.0.0.1:%d", args.port)
+    logging.info("Targeting %s", ANTHROPIC_HOST)
+    logging.info("Database: %s", args.db)
+    logging.info("Set ANTHROPIC_BASE_URL=http://localhost:%d in your shell", args.port)
+
     def shutdown(sig, frame):
         logging.info("Shutting down proxy...")
-        server.shutdown()
+        threading.Thread(target=server.shutdown).start()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        logging.info("Interrupted, shutting down...")
-        server.shutdown()
+    server.serve_forever()
 
 if __name__ == "__main__":
     main()

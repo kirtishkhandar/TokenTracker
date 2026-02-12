@@ -5,6 +5,7 @@ import Foundation
 struct UsageRecord: Identifiable {
     let id: Int
     let timestamp: Date
+    let provider: String
     let model: String
     let endpoint: String
     let inputTokens: Int
@@ -16,6 +17,7 @@ struct UsageRecord: Identifiable {
     let stopReason: String
     let caller: String
     let error: String
+    let apiKeyHint: String
 
     var totalTokens: Int { inputTokens + outputTokens }
 
@@ -32,25 +34,14 @@ struct UsageRecord: Identifiable {
     var isError: Bool { !error.isEmpty }
 
     var shortModel: String {
-        // "claude-sonnet-4-20250514" → "sonnet-4"
-        let parts = model.split(separator: "-")
-        if parts.count >= 3,
-           let familyIdx = parts.firstIndex(where: {
-               ["haiku", "sonnet", "opus"].contains($0.lowercased())
-           }) {
-            let family = parts[familyIdx]
-            let version = familyIdx + 1 < parts.count
-                ? "-\(parts[familyIdx + 1])" : ""
-            return "\(family)\(version)"
-        }
-        return model
+        model.shortModelName
     }
 }
 
 // MARK: - Token Pricing
 
 /// Estimated pricing per million tokens.
-/// These are approximations — update as Anthropic changes pricing.
+/// These are approximations — update as providers change pricing.
 struct TokenPricing {
     struct ModelPrice {
         let inputPerMillion: Double
@@ -59,10 +50,7 @@ struct TokenPricing {
         let cacheReadPerMillion: Double
     }
 
-    /// Pricing table (per million tokens, USD).
-    /// Last updated: 2025 pricing. Update as needed.
     static let prices: [String: ModelPrice] = [
-        // Claude 4 / 4.5 family
         "claude-opus-4": ModelPrice(
             inputPerMillion: 15.0, outputPerMillion: 75.0,
             cacheCreationPerMillion: 18.75, cacheReadPerMillion: 1.50),
@@ -72,16 +60,9 @@ struct TokenPricing {
         "claude-haiku-4": ModelPrice(
             inputPerMillion: 0.80, outputPerMillion: 4.0,
             cacheCreationPerMillion: 1.0, cacheReadPerMillion: 0.08),
-
-        // Claude 3.5 family
         "claude-3-5-sonnet": ModelPrice(
             inputPerMillion: 3.0, outputPerMillion: 15.0,
             cacheCreationPerMillion: 3.75, cacheReadPerMillion: 0.30),
-        "claude-3-5-haiku": ModelPrice(
-            inputPerMillion: 0.80, outputPerMillion: 4.0,
-            cacheCreationPerMillion: 1.0, cacheReadPerMillion: 0.08),
-
-        // Claude 3 family
         "claude-3-opus": ModelPrice(
             inputPerMillion: 15.0, outputPerMillion: 75.0,
             cacheCreationPerMillion: 18.75, cacheReadPerMillion: 1.50),
@@ -93,8 +74,6 @@ struct TokenPricing {
             cacheCreationPerMillion: 0.30, cacheReadPerMillion: 0.03),
     ]
 
-    /// Look up pricing for a model string.
-    /// Matches by prefix: "claude-sonnet-4-20250514" matches "claude-sonnet-4".
     static func priceFor(model: String) -> ModelPrice {
         // Try exact match first
         if let p = prices[model] { return p }
@@ -105,10 +84,8 @@ struct TokenPricing {
             if model.hasPrefix(key) { return prices[key]! }
         }
 
-        // Fallback: sonnet-tier pricing
-        return ModelPrice(
-            inputPerMillion: 3.0, outputPerMillion: 15.0,
-            cacheCreationPerMillion: 3.75, cacheReadPerMillion: 0.30)
+        // Fallback
+        return prices["claude-3-sonnet"]!
     }
 
     static func cost(model: String, inputTokens: Int, outputTokens: Int,
@@ -117,10 +94,8 @@ struct TokenPricing {
         let p = priceFor(model: model)
         let input = Double(inputTokens) / 1_000_000 * p.inputPerMillion
         let output = Double(outputTokens) / 1_000_000 * p.outputPerMillion
-        let cacheCreate = Double(cacheCreationTokens) / 1_000_000
-            * p.cacheCreationPerMillion
-        let cacheRead = Double(cacheReadTokens) / 1_000_000
-            * p.cacheReadPerMillion
+        let cacheCreate = Double(cacheCreationTokens) / 1_000_000 * p.cacheCreationPerMillion
+        let cacheRead = Double(cacheReadTokens) / 1_000_000 * p.cacheReadPerMillion
         return input + output + cacheCreate + cacheRead
     }
 }
@@ -132,10 +107,30 @@ struct ModelSummary: Identifiable {
     let requestCount: Int
     let inputTokens: Int
     let outputTokens: Int
-    let estimatedCost: Double
 
     var id: String { model }
     var totalTokens: Int { inputTokens + outputTokens }
+
+    var estimatedCost: Double {
+        TokenPricing.cost(
+            model: model,
+            inputTokens: inputTokens, outputTokens: outputTokens)
+    }
+}
+
+struct ApiKeySummary: Identifiable {
+    let apiKeyHint: String
+    let requestCount: Int
+    let inputTokens: Int
+    let outputTokens: Int
+    let estimatedCost: Double
+
+    var id: String { apiKeyHint }
+    var totalTokens: Int { inputTokens + outputTokens }
+
+    var displayName: String {
+        apiKeyHint.isEmpty ? "Unknown" : apiKeyHint
+    }
 }
 
 struct DailySummary: Identifiable {
